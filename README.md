@@ -2,18 +2,22 @@
 
 ## Table of Contents
 
+## Table of Contents
+
 - #introduction
-  - [Eardrum-anatomy
+  - #eardrum-anatomy
   - #pipeline-overview
 - #pre-processing
   - #input-requirements
   - #overview
-  - [Head Localization and Cropping
+  - #head-localization-and-cropping
   - #reference-frame-construction
   - #landmark-detection
-  - [Frankfort Plane Alignment](#frankfortgion-cropping
-  - [Intensity Normalization](#- #output-files
-- [Segmentation](#--
+  - #frankfort-plane-alignment
+  - #ear-region-cropping
+  - #intensity-normalization
+  - #output-files
+- #segmentation
 
 # Introduction
 
