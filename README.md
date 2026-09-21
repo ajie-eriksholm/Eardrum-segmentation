@@ -6,11 +6,11 @@
 
    - [Input Requirements](#12-input3-eardrum-anatomy)
 2. [Pre-processingng]
-   - #21-overview
+   - (#21-overview)
    - [Head Localization and Cropping](#22-head-localization-and-cstruction](#23-reference-frame-detection
    - [Frankfort Plane Alignment](#25-frankfort-plane-alignment)
-   - #27-intensity-normalization
-3. #3-output-files
+   - (#27-intensity-normalization)
+3. (#3-output-files)
 4. [4-usage]
 
 ---
