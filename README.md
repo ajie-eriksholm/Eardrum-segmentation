@@ -19,7 +19,7 @@
   - #output-files
 - #segmentation
 
-#Introduction
+# Introduction
 
 This repository contains a complete pipeline for automatic eardrum detection and segmentation from CT scans.
 
