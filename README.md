@@ -4,17 +4,16 @@
 
 - [introduction
   - #purpose
-  - [Input Requirements](#inputrdrum-anatomy
+  - #input-requirements
+  - #eardrum-anatomy
+
 - #pre-processing
   - #overview
-  - [Head Localization-and-cropping
-  - [Reference Frame Construction](#- #landmark-detection
-  - [Frankfort Plane-alignment
-  - #ear-region-cropping
-  - [Intensity Normalization
-- [output-files
-- #usage
-``
+  - #head-localization-and-cropping
+  - #reference-frame-construction
+  - #landmark-detection
+  - #frankfort-plane-alignment
+  - [Ear Region Cropping](#ear-region-y Normalization](#intensity-normalizatione
 
 # 1. Introduction
 
