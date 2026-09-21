@@ -1,25 +1,29 @@
-# Eardrum Detection and Segmentation Pipeline
+# Eardrum Detection and High-Resolution Ear Extraction Pipeline
 
 ## Table of Contents
 
-- [introduction
+- #introduction
   - #purpose
   - #input-requirements
   - #eardrum-anatomy
-
 - #pre-processing
   - #overview
   - #head-localization-and-cropping
   - #reference-frame-construction
   - #landmark-detection
   - #frankfort-plane-alignment
-  - [Ear Region Cropping](#ear-region-y Normalization](#intensity-normalizatione
+  - #ear-region-cropping
+  - #intensity-normalization
+- #output-files
+- #usage
 
-# 1. Introduction
+---
 
-## 1.1 Purpose
+# Introduction
 
-This repository contains a fully automated high-resolution preprocessing pipeline for detecting the tympanic membrane (eardrum) in head CT scans and extracting standardized ear-centered volumes for downstream analysis and segmentation tasks.
+## Purpose
+
+This repository contains a fully automated high-resolution preprocessing pipeline for detecting the tympanic membrane (eardrum) in head CT scans and extracting standardized ear-centered volumes for downstream segmentation and anatomical analysis tasks.
 
 The pipeline combines and extends the functionality of the original preprocessing workflow:
 
@@ -30,7 +34,7 @@ The pipeline combines and extends the functionality of the original preprocessin
 
 into a single script.
 
-Unlike the original workflow, the final output is generated directly from the native-resolution CT scan. A temporary low-resolution representation is only created internally for anatomical landmark detection. The final ear volumes are extracted at high isotropic resolution (default: **0.2 mm**) to preserve anatomical detail around the eardrum and middle-ear structures.
+Unlike the original workflow, the final output is generated directly from the high-resolution CT scan. A low-resolution representation is created only internally for landmark detection because the trained landmark detection network expects a fixed input resolution. The final extracted ear volumes remain high-resolution throughout the process (default isotropic spacing of **0.2 mm**), preserving anatomical detail around the eardrum, middle ear cavity, and cochlea.
 
 The pipeline performs:
 
@@ -40,11 +44,11 @@ The pipeline performs:
 4. Ear-centered ROI extraction.
 5. Intensity normalization.
 
-The resulting volumes can be used as inputs for eardrum segmentation models or other anatomical analyses.
+The resulting volumes can be used as inputs for eardrum segmentation models or other ear anatomy analysis pipelines.
 
 ---
 
-## 1.2 Input Requirements
+## Input Requirements
 
 The pipeline expects CT scans in NIfTI format:
 
@@ -62,264 +66,284 @@ or
 
 - Head CT scan containing both ears.
 - NIfTI format (`.nii` or `.nii.gz`).
-- Voxel spacing finer than:
+- Voxel spacing smaller than:
 
 ```text
 (1.5, 1.5, 5.5) mm
 ```
 
-Scans with lower spatial resolution are skipped automatically.
+Scans with coarser voxel sizes are automatically excluded.
 
 ### Required Model
 
-The pipeline requires a trained landmark-detection model:
+The pipeline requires a trained landmark detection model:
 
 ```text
 best_model_*.pth
 ```
 
-which predicts six anato*ical landmarks used for head align*ent and eardrum localization.
+which predicts six anatomical landmarks used for head alignment and ear localization.
 
-###*Software Dependencies
+### Software Dependencies
 
-This pipeli*e is adapted from the preprocessin* workflow originally developed for*the tissue segmentation project an* therefore requires the **same env*ronments, dependencies, and pretra*ned models** used in that pipeline*
+This pipeline is adapted from the preprocessing workflow developed for the tissue segmentation project. Therefore, it requires the same software environments, dependencies, and trained models used by the tissue segmentation preprocessing pipeline.
 
 Main dependencies include:
 
-- Py*orch
+- PyTorch
 - SimpleITK
 - NiBabel
-- NumPy*- SciPy
+- NumPy
+- SciPy
 - PyVista
-- TotalSegmentat*r
+- TotalSegmentator
 
 ---
 
-## 1.3 Eardrum Anatomy
+## Eardrum Anatomy
 
-Th* tympanic membrane, commonly refer*ed to as the eardrum, is a thin me*brane separating the external audi*ory canal from the middle ear cavi*y.
+The tympanic membrane, commonly known as the eardrum, is a thin membrane that separates the external auditory canal from the middle ear cavity.
 
-Its main functions are:
+Its primary functions are:
 
-- Con*erting sound pressure waves into m*chanical vibrations.
-- Transmittin* acoustic energy to the ossicular *hain.
-- Protecting the middle ear *rom the external environment.
+- Converting sound pressure waves into mechanical vibrations.
+- Transmitting acoustic energy to the ossicular chain.
+- Acting as a barrier between the external and middle ear.
 
-The*eardrum is located at the medial e*d of the external auditory canal a*d provides a robust anatomical lan*mark for standardizing ear-centere* coordinate systems.
+The eardrum is located at the medial end of the external auditory canal and provides a reliable anatomical landmark for defining a standardized ear-centered coordinate system.
 
-In this pipe*ine, dedicated deep-learning landm*rks corresponding to the right and*left tympanic membranes (**landmar*s 10 and 11**) are detected and us*d to localize the final high-resol*tion ear volumes.
-
----
-
-# 2. Pre-p*ocessing
-
-## 2.1 Overview
-
-This pr*processing pipeline is a high-reso*ution adaptation of the preprocess*ng workflow originally developed f*r tissue segmentation.
-
-The same a*atomical normalization principles *re used:
-
-- Standardized head loca*ization.
-- Anatomically meaningful*coordinate systems.
-- Landmark-bas*d orientation correction.
-- Consis*ent ear-centered cropping.
-
-The ke* difference is that the final extr*cted ear volumes preserve high-fre*uency anatomical information. Alth*ugh a low-resolution volume is tem*orarily generated for landmark det*ction, the final outputs are obtai*ed directly from a high-resolution*representation of the original CT *can.
+In this pipeline, the right and left eardrums are represented by **landmarks 10 and 11**, respectively. These landmarks are detected automatically and are subsequently used for both head alignment and extraction of the final ear-centered volumes.
 
 ---
 
-## 2.2 Head Localizatio* and Cropping
+# Pre-processing
 
-The first stage ide*tifies the head region and removes*unnecessary anatomy.
+## Overview
 
-### Intensit* clipping
+This preprocessing pipeline is a high-resolution adaptation of the preprocessing workflow originally developed for tissue segmentation.
 
-CT intensities are clip*ed to:
+The same anatomical normalization principles are preserved:
+
+- Head localization.
+- Anatomically consistent coordinate systems.
+- Landmark-based alignment.
+- Standardized cropping.
+
+The main difference is that the final ear volumes are generated from a high-resolution representation of the CT scan. Although a low-resolution copy is temporarily generated for landmark detection, no low-resolution data are used for the final output.
+
+The processing steps are summarized below.
+
+---
+
+## Head Localization and Cropping
+
+The first stage identifies the head and removes unnecessary anatomy.
+
+### Intensity Clipping
+
+CT intensities are clipped to:
 
 ```text
 [-1000, 2007] HU
-`*`
-
-to suppress extreme outliers an* standardize the dynamic range.
-
-#*# Ear localization
-
-The `head_glan*s_cavities` task from TotalSegment*tor is used to segment relevant an*tomical structures.
-
-The centroids*of the left and right auditory can*ls are extracted from the segmenta*ion and used to define the midpoin* between both ears.
-
-### Head ROI *xtraction
-
-A fixed-size head volum* is cropped around the ear midpoin* while preserving the original sca* resolution.
-
-This step reduces co*putational cost while ensuring tha* all relevant head structures rema*n available for downstream process*ng.
-
----
-
-## 2.3 Reference Frame C*nstruction
-
-After head cropping, t*e scan is transformed into a stand*rdized local coordinate system.
-
-T*e cropped volume is:
-
-1. Resampled*to a standardized spacing.
-2. Reor*ented into a consistent anatomical*orientation.
-3. Assigned a common *ocal origin.
-
-From this reference *rame, two separate volumes are gen*rated.
-
-### Low-resolution detecti*n volume
-
-A temporary low-resoluti*n volume is generated exclusively *or*landmark detection*
-
-Characteristics*
-
-*``*ext**pacing***** mm*Padding:**40 × *40 ×*540
-*inal size**256 ×*256 × 256*```
-
-*his representation matches the inp*t resolution used during training *f the landmark detection network.
-*### High-resolution working volume*
-A separate high-resolution volume*is generated directly from the loc*l reference frame.
-
-Characteristic*:
-
-```text
-Default spacing: 0.2 mm*isotropic
 ```
 
-*o intermediate downsampling is per*ormed after this stage.
+to reduce the influence of extreme intensity values while preserving relevant anatomical structures.
 
-This volu*e is used for all subsequent cropp*ng and output generation steps.
+### Ear Localization
 
--*-
+TotalSegmentator is executed using the `head_glands_cavities` task.
 
-## 2.4 Landmark Detection
+The centroids of the:
 
-Anat*mical landmark detection is perfor*ed using a 3D U-Net model.
+- Right auditory canal
+- Left auditory canal
 
-The ne*work predicts six landmarks:
+are extracted from the segmentation output.
 
-- La*dmark 8
-- Landmark 9
-- Landmark *0*-*Landmark *1*- Landmark**2
-- Landmark *3
+The midpoint between both auditory canals is computed and used as the reference point for head cropping.
 
-*he*predicted coordinates*are converted into physical world *oordinates within the standardized*reference frame.
+### Head ROI Extraction
 
-Particular*importance is given to:
+A fixed-size head ROI is extracted around the ear midpoint while preserving the original scan resolution.
 
-*``*ext
-Landmark 10 → Right eardrum
-La*dmark *1 → Left eardrum
-*``
-
-*hese landmarks*are later used*both for Frankfort plane alignment*and for defining*the center of the final ear*crops.
+This reduces computational requirements while retaining all anatomical structures needed for subsequent landmark detection and alignment.
 
 ---
 
-*# 2.5 Frankfort Plane Alignment
+## Reference Frame Construction
 
-T**reduce inter*subject orientation variability,*the head is aligned using the*Frankfort plane.
+After head localization, a standardized local reference frame is created.
 
-*## Standard*Mode
+The cropped volume is:
 
-In*the*default configuration**the Frankfort*plane is estimated*from the detected anatomical*landmarks.
+1. Resampled.
+2. Reoriented into a consistent anatomical orientation.
+3. Assigned a common origin.
 
-The scan*is*rotated so that:
+Two separate volumes are then generated.
 
--*The*Frankfort plane becomes horizontal*
-- The left*right anatomical axis is standardi*ed across subjects.
+### Low-Resolution Detection Volume
 
-###*No-Eyes Mode
+A temporary low-resolution volume is produced exclusively for landmark detection.
 
-When eye*based*landmarks are unavailable or unrel*able,*an alternative strategy can be use*.
+Characteristics:
 
-Additional segmentation of:
+```text
+Spacing: 0.5 mm
+Padding: 540 × 540 × 540 voxels
+Final size: 256 × 256 × 256 voxels
+```
 
-- *asseter muscles
-- L*teral*pterygoid muscles*
-is obtained*using*TotalSegmentator*
+This volume matches the resolution and dimensions used during landmark-model training.
 
-These anatomical*structures*are combined*with eardrum*landmarks to estimate a*robust anatomical reference plane.*
-### Quality Control*
-*everal quality*control checks*are performed, including:
+### High-Resolution Working Volume
 
--*Left*right*eardrum symmetry.
-- Out*ier detection.
-- Muscle*containment checks.
-* Landmark*consistency checks.
-- Excess*ve*rotation detection.
+A second volume is generated specifically for the final outputs.
 
-*isualizations*and diagnostic*information are generated to*facilitate quality assessment.
+Characteristics:
 
-*--
+```text
+Default spacing: 0.2 mm isotropic
+```
 
-*# 2*6 Ear Region Cropping
+Unlike the original preprocessing workflow, this volume is not downsampled before ear extraction.
 
-*fter alignment* separate*ear-centered volumes are extracted*
+Consequently, the final crops preserve substantially more anatomical detail around the tympanic membrane and surrounding structures.
+
+---
+
+## Landmark Detection
+
+Anatomical landmark detection is performed using a 3D U-Net model.
+
+The network predicts six anatomical landmarks:
+
+- Landmark 8
+- Landmark 9
+- Landmark 10
+- Landmark 11
+- Landmark 12
+- Landmark 13
+
+Predicted landmark locations are converted into physical world coordinates within the standardized reference frame.
+
+The most relevant landmarks for this pipeline are:
+
+```text
+Landmark 10 → Right eardrum
+Landmark 11 → Left eardrum
+```
+
+These landmarks define the center of the final ear volumes.
+
+---
+
+## Frankfort Plane Alignment
+
+To reduce orientation variability between subjects, the head is aligned using the Frankfort plane.
+
+### Standard Mode
+
+The default alignment strategy uses the predicted anatomical landmarks to estimate the Frankfort plane.
+
+The scan is rotated such that:
+
+- The Frankfort plane becomes horizontal.
+- The left-right anatomical axis is standardized.
+
+### No-Eyes Mode
+
+When eye-based landmarks are not available or are considered unreliable, an alternative alignment strategy can be used.
+
+In this mode, TotalSegmentator is used to segment:
+
+- Masseter muscles
+- Lateral pterygoid muscles
+
+These structures are combined with the eardrum landmarks to estimate a robust anatomical reference plane.
+
+### Quality Control
+
+Several quality-control checks are performed automatically, including:
+
+- Left-right eardrum distance consistency.
+- Landmark outlier detection.
+- Muscle containment checks.
+- Landmark-to-muscle consistency checks.
+- Detection of unusually large rotations.
+
+Diagnostic figures and visualizations are generated to facilitate review of potentially problematic scans.
+
+---
+
+## Ear Region Cropping
+
+After alignment, separate ear-centered volumes are extracted.
 
 For each ear:
 
-1* The*corresponding e*rdrum landmark is identified*
-2* A configurable*offset is applied to include addit*onal*anatomical structures such as the *ochlea.
-3.*A fixed-size cubic ROI*is extracted.
+1. The corresponding eardrum landmark is identified.
+2. A configurable offset is applied to include relevant anatomy medial to the eardrum (e.g., cochlear structures).
+3. A fixed-size cubic ROI is extracted.
 
-Default parameters*
-
-```text**pacing* 0*2 mm*Crop*size:*256 ×*256 × *56 voxels
-*hysical field*of*view: 51*2 mm ×*51.2*mm × 51.* mm
-*``
-
-*o*ensure consistent orientation acro*s the*dataset, the left-ear crop*is mirrored so that both ears foll*w the same anatomical convention.
-*---
-
-## *.7 Intensity*Normalization
-
-*he final*stage performs intensity normaliza*ion.
-
-First, voxel values are clip*ed to:
+Default settings:
 
 ```text
-[-1000, 2007] HU*```
-
-*he clipped values are*then linearly normalized to:
-
-```t*xt
-[0, 1*
+Voxel spacing: 0.2 mm
+Crop size: 256 × 256 × 256 voxels
+Physical field of view: 51.2 mm × 51.2 mm × 51.2 mm
 ```
 
-*his normalization strategy is iden*ical to the one used in the origin*l tissue segmentation workflow and*ensures compatibility with downstr*am deep-learning models.
+To ensure a consistent anatomical orientation across the dataset, the left-ear crop is mirrored so that both ears share the same coordinate convention.
 
 ---
 
-# 3* Output Files
+## Intensity Normalization
 
-For each processed*patient, the following files are g*nerated:
+The final preprocessing step applies intensity normalization.
+
+Voxel intensities are first clipped to:
+
+```text
+[-1000, 2007] HU
+```
+
+The clipped values are then linearly normalized to:
+
+```text
+[0, 1]
+```
+
+This normalization procedure is identical to the final normalization step used in the original tissue segmentation preprocessing workflow.
+
+---
+
+# Output Files
+
+For each patient, the pipeline generates:
 
 ```text
 patient/
-├── pat*ent_right_ear_raw_hu.nii.gz
-├── pa*ient_left_ear_raw_hu.nii.gz
-├── pa*ient_right_ear_0000.nii.gz
-├── pat*ent_left_ear_0000.nii.gz
-├── patie*t_transform_log.json
-└── visualiza*ions/
+├── patient_right_ear_raw_hu.nii.gz
+├── patient_left_ear_raw_hu.nii.gz
+├── patient_right_ear_0000.nii.gz
+├── patient_left_ear_0000.nii.gz
+├── patient_transform_log.json
+└── visualizations/
 ```
 
 ### File Description
 
-|*File | Description |
-|--------|---*---------|
-| `*_raw_hu.nii.gz` | E*r crop in original Hounsfield Unit* |
-| `*_0000.nii.gz` | Normalized ear crop in the range [0,1] |
-| `*_transform_log.json` | Complete processing and transformation log |
-| `visualizations/` | Landmark and quality-control visualizations |
+- `*_raw_hu.nii.gz` : Cropped ear volume in original Hounsfield Units.
+- `*_0000.nii.gz` : Normalized ear volume in the range [0,1].
+- `*_transform_log.json` : Complete log of all transformations applied during processing.
+- `visualizations/` : Landmark and quality-control visualizations.
 
 ---
 
-# 4. Usage
+# Usage
 
-### Single Scan
+## Single Scan
 
 ```bash
 python p_highres_ear_pipeline.py \
@@ -328,7 +352,7 @@ python p_highres_ear_pipeline.py \
     --landmark_model best_model.pth
 ```
 
-### Batch Processing
+## Batch Processing
 
 ```bash
 python p_highres_ear_pipeline.py \
@@ -337,7 +361,7 @@ python p_highres_ear_pipeline.py \
     --landmark_model best_model.pth
 ```
 
-### Optional Arguments
+## Optional Arguments
 
 ```bash
 --highres_spacing 0.2
@@ -347,4 +371,4 @@ python p_highres_ear_pipeline.py \
 --skip_alignment True
 ```
 
-The pipeline produces standardized high-resolution ear volumes centered on the tympanic membrane while preserving anatomical detail required for eardrum detection and segmentation.
+The pipeline produces standardized high-resolution ear volumes centered on the tympanic membrane while preserving the anatomical detail required for eardrum detection and segmentation.
