@@ -2,18 +2,19 @@
 
 ## Table of Contents
 
-1. [Introduction](#1-introduction)
-
-   - [Input Requirements](#12-input3-eardrum-anatomy)
-2. [Pre-processingng]
-   - (#21-overview)
-   - [Head Localization and Cropping](#22-head-localization-and-cstruction](#23-reference-frame-detection
-   - [Frankfort Plane Alignment](#25-frankfort-plane-alignment)
-   - (#27-intensity-normalization)
-3. (#3-output-files)
-4. [4-usage]
-
----
+- [introduction
+  - #purpose
+  - [Input Requirements](#inputrdrum-anatomy
+- #pre-processing
+  - #overview
+  - [Head Localization-and-cropping
+  - [Reference Frame Construction](#- #landmark-detection
+  - [Frankfort Plane-alignment
+  - #ear-region-cropping
+  - [Intensity Normalization
+- [output-files
+- #usage
+``
 
 # 1. Introduction
 
