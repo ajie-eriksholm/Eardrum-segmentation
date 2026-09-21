@@ -4,7 +4,7 @@
 
 ## Table of Contents
 
-- #introduction
+- #Introduction
   - #eardrum-anatomy
   - #pipeline-overview
 - #pre-processing
@@ -19,7 +19,7 @@
   - #output-files
 - #segmentation
 
-# Introduction
+#Introduction
 
 This repository contains a complete pipeline for automatic eardrum detection and segmentation from CT scans.
 
