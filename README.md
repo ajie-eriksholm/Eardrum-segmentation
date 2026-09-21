@@ -1,4 +1,4 @@
-# Eardrum Detection and High-Resolution Ear Extraction Pipeline
+# Eardrum Detection and Segmentation Pipeline
 
 ## Table of Contents
 
