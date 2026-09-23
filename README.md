@@ -595,3 +595,7 @@ All outputs are expressed in the coordinate system of the original CT scan and c
 The preprocessing pipeline operates in a standardized ear-centered reference frame optimized for segmentation performance.
 
 The mapping step reconstructs the full inverse transformation chain and restores masks, STL models, and landmarks to the coordinate system of the original CT scan, preserving anatomical location and compatibility with external workflows.
+
+## NEW FLAGS FULL PIPELINE
+- MAP_TO_ORIGINA: to extract the results in the original space in "Results_original". By default TRUE.
+- EXPORT_SLICER_MARKUPS: to extract the markups in a format to visualize in 3DSlicer in "markups_slicer". By default TRUE.
