@@ -421,3 +421,177 @@ This section will describe the automatic eardrum segmentation model, including:
 - Output segmentation masks
 - Performance evaluation
 - Usage examples
+
+## Mapping Results Back to the Original CT Space
+
+The preprocessing pipeline described above generates ear-centered volumes in a standardized reference frame that is optimized for landmark detection, anatomical alignment, and segmentation.
+
+For downstream applications such as visualization in the original patient CT, surgical planning, anatomical measurements, or integration with other processing pipelines, an additional post-processing step is available to map segmentation results back to the coordinate system of the original CT scan.
+
+### Purpose
+
+During preprocessing, multiple spatial transformations are applied:
+
+- Head ROI extraction.
+- Orientation standardization.
+- Landmark-based Frankfort-plane alignment.
+- Ear-centered cropping.
+- Left-ear mirroring.
+- Resampling between multiple image resolutions.
+
+As a result, the final segmentation masks, STL models, and landmarks are no longer expressed in the coordinate system of the original CT scan.
+
+The mapping pipeline reconstructs the inverse transformation chain and restores all outputs to their original physical location.
+
+### Inputs
+
+The mapping procedure uses:
+
+- P1 transformation logs.
+- P2 transformation logs.
+- P3 transformation logs.
+- Intermediate NIfTI volumes generated during preprocessing.
+- Segmentation masks.
+- STL surface models.
+- Landmark markup files.
+
+### Transformation Chain
+
+The complete forward preprocessing workflow can be summarized as:
+
+```text
+Original CT
+    ↓
+Head crop
+    ↓
+Reference-frame standardization
+    ↓
+Landmark-based alignment
+    ↓
+Ear cropping
+    ↓
+Left-ear mirroring (if applicable)
+    ↓
+Final result space
+```
+
+The mapping script computes the inverse of this chain and builds a single transformation matrix:
+
+```text
+M : Result voxel space → Original CT voxel space
+```
+
+This matrix combines all preprocessing steps into a single voxel-to-voxel transformation.
+
+### Mapping of Segmentation Masks
+
+Segmentation masks are mapped back to the original CT grid using nearest-neighbour interpolation.
+
+The output mask therefore:
+
+- Matches the dimensions of the original CT scan.
+- Preserves discrete label values.
+- Can be directly overlaid on the original image.
+
+### Mapping of STL Models
+
+STL meshes are mapped by transforming every vertex from result space back into the original scan coordinate system.
+
+For each vertex:
+
+```text
+Result world coordinates
+        ↓
+Result voxel coordinates
+        ↓
+Original voxel coordinates
+        ↓
+Original world coordinates
+```
+
+The resulting STL occupies the same anatomical location as the corresponding structure within the original CT scan.
+
+### Mapping of Landmark Files
+
+Landmark markup files are mapped similarly to STL vertices.
+
+Each landmark position is transformed from the ear-centered processing space into the physical coordinate system of the original CT scan.
+
+This allows landmarks to be visualized together with the original image and any other anatomical annotations.
+
+### Coordinate-System Conversion
+
+The mapping script supports both:
+
+```text
+LPS
+RAS
+```
+
+coordinate conventions.
+
+When required, coordinates are automatically converted between LPS and RAS systems during transformation.
+
+This ensures compatibility with software packages such as:
+
+- 3D Slicer
+- ITK / SimpleITK
+- Medical imaging toolkits using LPS conventions
+
+### Left-Ear Mirroring
+
+During preprocessing, left-ear crops are mirrored to match the orientation of right-ear crops.
+
+When mapping results back to the original scan:
+
+- Left-ear results are automatically unmirrored.
+- Original anatomical laterality is restored.
+
+This guarantees that mapped results appear on the correct side of the patient's anatomy.
+
+### Validation
+
+A validation mode is provided to verify that the inverse transformation chain is correct.
+
+The validation procedure:
+
+1. Computes the centroid of the processed ear mask.
+2. Maps this centroid back to the original CT space.
+3. Compares the mapped location with the auditory-canal centroid recorded during P1 preprocessing.
+
+Small distances between both points indicate that the transformation chain has been reconstructed correctly.
+
+Example:
+
+```bash
+python map_results_to_original.py \
+    --logs_dir Logs/transform_logs \
+    --processed_dir Processed-Data \
+    --masks_dir Results/masks \
+    --validate
+```
+
+### Outputs
+
+The mapping pipeline can generate original-space versions of:
+
+```text
+Segmentation masks
+STL models
+Bone STL models
+Landmark markup files
+```
+
+All outputs are expressed in the coordinate system of the original CT scan and can therefore be used for:
+
+- Visualization in the native CT.
+- Anatomical measurements.
+- Registration with other image data.
+- Surgical planning.
+- External modelling and simulation workflows.
+
+### Summary
+
+The preprocessing pipeline operates in a standardized ear-centered reference frame optimized for segmentation performance.
+
+The mapping step reconstructs the full inverse transformation chain and restores masks, STL models, and landmarks to the coordinate system of the original CT scan, preserving anatomical location and compatibility with external workflows.
