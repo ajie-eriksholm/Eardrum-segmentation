@@ -2,15 +2,19 @@
 
 ## Table of Contents
 
-- [introduction
-  - [Eardrum Anatomy](#eardrum-anatomyrview
-- #pre-processing
-  - [Input-requirements
-  - [Overview](#overviewLocalization and Cropping](#head-ference-frame-construction
-  - [Landmark Detection](#landmark-ort-plane-alignment
-  - [Ear Region Cropping](#ear-region-y-normalization
-  - #output-files
-- [Segmentation](# Introduction
+- #introduction
+  - #eardrum-anatomy
+  - #pipeline-overview
+- [pre-processing
+  - #input-requirements
+  - #overview
+  - [Head Localization and Cropping
+  - [Reference Frame Construction]  - #landmark-detection
+  - [Frankfort Plane Alignment](#- #ear-region-cropping
+  - [Intensity Normalization](#- #output-files
+- #segmentation
+
+# Introduction
 
 This repository contains a complete pipeline for automatic eardrum detection and segmentation from CT scans.
 
@@ -45,22 +49,23 @@ Due to its small size and thin geometry, accurate identification of the eardrum 
 
 The complete workflow consists of the following stages:
 
-1. Intensity clipping and head localization.
-2. Native-resolution head ROI extraction.
-3. Reference-frame construction.
-4. Anatomical landmark detection.
-5. Frankfort plane alignment.
-6. High-resolution ear extraction.
-7. Intensity normalization.
-8. Automatic eardrum segmentation.
+1. Intensity clipping.
+2. Head localization.
+3. Native-resolution head ROI extraction.
+4. Reference-frame construction.
+5. Anatomical landmark detection.
+6. Frankfort plane alignment.
+7. High-resolution ear extraction.
+8. Intensity normalization.
+9. Automatic eardrum segmentation.
 
 The preprocessing pipeline combines the functionality of the original P1-P4 workflow into a single script while preserving compatibility with the existing landmark-detection model.
 
-A temporary low-resolution volume is generated exclusively for landmark detection because the trained model expects a fixed 256 × 256 × 256 input grid. However, this low-resolution representation is never used as the final output.
+A temporary low-resolution volume is generated exclusively for landmark detection because the trained model expects a fixed 256 × 256 × 256 input grid. This representation is used only for landmark prediction and is discarded afterwards.
 
-All final ear crops are extracted at a configurable isotropic resolution (0.2 mm by default) directly from a higher-resolution reference frame, avoiding the coarse intermediate downsampling used in the original preprocessing pipeline.
+All final ear crops are extracted at a configurable isotropic resolution (0.2 mm by default) directly from a higher-resolution reference frame. Unlike the original preprocessing workflow, the final outputs are not generated from the low-resolution landmark-detection volume.
 
-The pipeline also preserves compatibility with the coordinate system and output space used by the historical P1-P4 workflow, allowing newly generated crops to remain spatially consistent with previously processed datasets.
+The pipeline additionally preserves compatibility with the coordinate conventions used by the original P1-P4 workflow, allowing integration with previously processed datasets and transformation logs.
 
 ---
 
@@ -123,13 +128,25 @@ This preprocessing pipeline is a high-resolution adaptation of the preprocessing
 The same anatomical normalization principles are preserved:
 
 - Head localization.
-- Anatomically consistent coordinate systems.
+- Standardized anatomical orientation.
 - Landmark-based alignment.
+- Consistent coordinate systems.
 - Standardized cropping.
 
-The key difference is that landmark detection is performed on a temporary low-resolution representation, while all final ear volumes are generated from a high-resolution reference frame.
+The preprocessing workflow consists of:
 
-Final outputs are therefore produced without the coarse intermediate downsampling used in the original P1-P4 workflow.
+1. Intensity clipping.
+2. Head localization using TotalSegmentator.
+3. Native-resolution head ROI extraction.
+4. Construction of a standardized local reference frame.
+5. Landmark detection using a 3D U-Net.
+6. Frankfort-plane alignment.
+7. High-resolution ear extraction.
+8. Intensity normalization.
+
+The key difference from the original P1-P4 workflow is that landmark detection is performed on a temporary low-resolution representation, while all final ear crops are generated in a high-resolution reference frame.
+
+Final outputs are therefore produced without the coarse intermediate downsampling used in the original preprocessing workflow.
 
 ---
 
@@ -151,25 +168,21 @@ to reduce the influence of extreme intensity values while preserving relevant an
 
 TotalSegmentator is executed using the `head_glands_cavities` task.
 
-The centroids of the left and right auditory canals are extracted from the segmentation output. The midpoint between both canals is then calculated and used as the reference point for head localization.
+The centroids of the left and right auditory canals are extracted from the segmentation output. The midpoint between both canals is calculated and used as the reference point for head localization.
 
 ### Head ROI Extraction
 
 A fixed-size head ROI is cropped around the ear midpoint while preserving the native scan resolution.
 
-Default ROI size:
+Default ROI dimensions:
 
 ```text
-200 × 270 × 200 mm
+200 × 270 × 250 mm
 ```
 
-with an additional superior margin of:
+The superior direction includes an additional 50 mm margin to ensure sufficient anatomical coverage for subsequent landmark detection and alignment.
 
-```text
-50 mm
-```
-
-This step reduces computational cost while retaining all anatomical structures required for subsequent processing stages.
+This step reduces computational cost while retaining all structures required for the remaining processing stages.
 
 ---
 
@@ -181,17 +194,15 @@ The cropped head ROI is first resampled to a common local reference frame with:
 
 ```text
 Spacing: 0.5 mm isotropic
-Origin: (0,0,0)
+Origin: (0, 0, 0)
 Orientation signs: (-X, -Y, +Z)
 ```
 
 The volume is automatically flipped when necessary so that all scans share the same orientation convention prior to landmark detection.
 
-Two separate representations are then generated from this common reference frame.
-
 ### Landmark Detection Volume
 
-A temporary low-resolution volume is produced exclusively for landmark detection.
+A temporary low-resolution volume is generated exclusively for landmark detection.
 
 Characteristics:
 
@@ -201,11 +212,11 @@ Padding: 540 × 540 × 540 voxels
 Final size: 256 × 256 × 256 voxels
 ```
 
-This volume reproduces the dimensions and resolution used during landmark-model training and is discarded once landmark prediction is complete.
+This volume reproduces the dimensions and spatial resolution used during landmark-model training and is discarded after landmark prediction.
 
 ### High-Resolution Working Space
 
-A second reference space is created specifically for extraction of the final ear crops.
+A second reference space is created specifically for final ear extraction.
 
 Characteristics:
 
@@ -213,11 +224,11 @@ Characteristics:
 Default spacing: 0.2 mm isotropic
 ```
 
-Unlike the original preprocessing workflow, this representation is not downsampled to the coarse landmark-detection resolution before generating the final outputs.
+Unlike the original preprocessing workflow, the final ear crops are not generated from the low-resolution landmark-detection volume.
 
-When `fast=False`, the entire high-resolution head volume is explicitly resampled and rotated prior to ear extraction.
+When `fast=False`, the entire high-resolution head volume is explicitly generated and rotated prior to ear extraction.
 
-When `fast=True`, each ear field of view is resampled directly from the local reference frame without first creating the full high-resolution head volume, substantially reducing memory requirements.
+When `fast=True`, each ear field of view is resampled directly from the local reference frame without creating the complete high-resolution head volume, reducing memory usage while preserving the final output space.
 
 ---
 
@@ -236,9 +247,9 @@ Landmark 12
 Landmark 13
 ```
 
-Landmarks are predicted as heatmaps and subsequently converted into physical world coordinates defined within the standardized local reference frame.
+Landmarks are predicted as heatmaps and subsequently converted into physical world coordinates within the standardized reference frame.
 
-The coordinate conversion follows the same convention used by the original P2 preprocessing workflow to maintain compatibility with previously trained models and downstream processing tools.
+The coordinate conversion follows the same convention used by the original P2 preprocessing workflow to ensure compatibility with previously trained models and downstream processing scripts.
 
 The most relevant landmarks for this pipeline are:
 
@@ -247,28 +258,26 @@ Landmark 10 → Right eardrum
 Landmark 11 → Left eardrum
 ```
 
-These landmarks are used both for Frankfort-plane alignment and for extraction of the final ear-centered volumes.
+These landmarks are used for both Frankfort-plane alignment and extraction of the final ear-centered volumes.
 
 ---
 
 ## Frankfort Plane Alignment
 
-To reduce anatomical orientation variability across subjects, the head is aligned using the Frankfort plane.
+To reduce orientation variability across subjects, the head is aligned using the Frankfort plane.
 
 ### Standard Mode
 
-The default alignment strategy uses landmarks 10–13 to estimate the Frankfort plane.
+The default alignment strategy uses landmarks 10-13 to estimate the Frankfort plane.
 
 The resulting rotation aligns:
 
 - The Frankfort plane with the horizontal plane.
 - The left-right anatomical axis with the global x-direction.
 
-The same transformation is subsequently applied to the extracted ear volumes.
-
 ### No-Eyes Mode
 
-When eye-based landmarks are unavailable or unreliable, an alternative alignment strategy can be used via:
+When eye-based landmarks are unavailable or unreliable, an alternative alignment strategy can be used:
 
 ```bash
 --no_eyes True
@@ -279,33 +288,136 @@ In this mode, TotalSegmentator is used to segment:
 - Masseter muscles
 - Lateral pterygoid muscles
 
-Muscle-derived anatomical landmarks are combined with eardrum landmarks to estimate a robust anatomical reference plane using SVD-based plane fitting.
+These structures are combined with the eardrum landmarks to estimate a robust anatomical reference plane using SVD-based plane fitting.
 
 ### Skip Alignment Mode
 
-For experiments where alignment is not desired, Frankfort-plane alignment can be skipped entirely:
+For experiments where rotational normalization is not desired:
 
 ```bash
 --skip_alignment True
 ```
 
-In this configuration, landmark detection is still performed, but no rotational normalization is applied.
+can be used.
+
+Landmark detection remains active, but no Frankfort-plane alignment is applied.
 
 ### Quality Control
 
-Several automated quality-control checks are performed:
+Several quality-control checks are performed automatically:
 
 - LM10-LM11 distance validation.
-- Muscle containment checks.
 - Landmark outlier detection.
 - Muscle outlier detection.
+- Muscle containment checks.
 - Landmark-to-muscle consistency checks.
 - Detection of unusually large rotations (>10°).
 
-Potentially problematic scans can be flagged automatically, and optional visualizations can be generated for manual review.
+Optional visualizations can be generated to facilitate manual review of problematic cases.
 
 ---
 
 ## Ear Region Cropping
 
-After Frankfort-plane alignment, separate right- 
+After alignment, separate right- and left-ear volumes are extracted.
+
+For each ear:
+
+1. The corresponding eardrum landmark is identified.
+2. A configurable offset is applied to include anatomy medial to the eardrum.
+3. A fixed-size cubic field of view is extracted.
+
+Default settings:
+
+```text
+Voxel spacing: 0.2 mm isotropic
+Crop size: 256 × 256 × 256 voxels
+Physical field of view: 51.2 × 51.2 × 51.2 mm
+Default offset: [20, 0, 0] mm
+```
+
+The crop is centered on:
+
+```text
+Landmark 10 → Right ear
+Landmark 11 → Left ear
+```
+
+The offset helps include additional cochlear and middle-ear anatomy surrounding the tympanic membrane.
+
+To ensure a consistent anatomical orientation across the dataset, left-ear crops are mirrored along the x-axis so that both ears follow the same orientation convention.
+
+The final crop affines are adjusted to remain compatible with the coordinate system used by the historical P3-P4 preprocessing workflow.
+
+---
+
+## Intensity Normalization
+
+The final preprocessing step applies intensity normalization.
+
+Voxel intensities are first clipped to:
+
+```text
+[-1000, 2007] HU
+```
+
+The clipped values are subsequently normalized to:
+
+```text
+[0,1]
+```
+
+using:
+
+```text
+(I - HUmin) / (HUmax - HUmin)
+```
+
+This normalization strategy matches the final intensity-normalization step used by the original tissue-segmentation preprocessing workflow.
+
+---
+
+## Output Files
+
+For each processed patient, the pipeline generates:
+
+```text
+patient/
+├── patient_right_ear_raw_hu.nii.gz
+├── patient_left_ear_raw_hu.nii.gz
+├── patient_right_ear_0000.nii.gz
+├── patient_left_ear_0000.nii.gz
+├── patient_transform_log.json
+└── visualizations/
+```
+
+### File Description
+
+- `*_raw_hu.nii.gz`: Ear crop stored in Hounsfield Units.
+- `*_0000.nii.gz`: Final normalized ear crop in the range [0,1].
+- `*_transform_log.json`: Complete record of all transformations applied during preprocessing.
+- `visualizations/`: Optional landmark and quality-control figures.
+
+The primary outputs intended for downstream segmentation are:
+
+```text
+patient_right_ear_0000.nii.gz
+patient_left_ear_0000.nii.gz
+```
+
+These files contain normalized voxel intensities and are the recommended inputs for eardrum segmentation models.
+
+---
+
+# Segmentation
+
+*Coming soon.*
+
+This section will describe the automatic eardrum segmentation model, including:
+
+- Model architecture
+- Training procedure
+- Inference workflow
+- Output segmentation masks
+- Performance evaluation
+- Usage examples
