@@ -83,9 +83,17 @@ EAR_FOV_VOXELS = [256, 256, 256]           # 256 * 0.2mm = 51.2mm cube
 EAR_OFFSET_MM = np.array([100.0, 0.0, 0.0])
 MIRROR_AXIS = 0                            # axis used to mirror the left ear onto the right ear's orientation
 
+# --- P3/P4 reference box (replicated internally so this crop lands in the SAME
+#     output frame the P1->P4 pipeline produces, without reading any transform log) ---
+P4_ROI_SIZE_VOXELS = 90                    # P3 crops a 90^3 ROI at the aligned (~1.05 mm) grid
+P4_OFFSET_MM = np.array([20.0, 10.0, -5.0])  # P3's landmark->crop-center offset (x sign flips per ear)
+
 # --- Landmark detection ---
 LANDMARK_IDS = [8, 9, 10, 11, 12, 13]
 NUM_LANDMARKS = len(LANDMARK_IDS)
+
+# --- Runtime toggles (set from CLI in main()) ---
+VISUALIZE = False   # save landmark/Frankfort QA screenshots (slow rendering; off by default)
 
 # --- Final normalization (P4 step) ---
 MIN_HU = -1000
@@ -332,12 +340,23 @@ def reset_origin_and_orient(data, affine, target_signs=np.array([-1, -1, 1])):
     Reset origin to (0,0,0) and standardize orientation signs (LAS-style),
     exactly like P1 steps 6-7. Defines the shared local coordinate frame used
     by BOTH the low-res detection volume and the high-res output volume.
+
+    Also returns `flip_info` (which axes were flipped, the array shape at the
+    time of flipping, and target_signs) so this step can be inverted later
+    (e.g. to map a segmentation predicted on the final ear crop back onto the
+    original scan) -- this doesn't change any numeric behavior, it only
+    records what was already being discarded.
     """
     affine = affine.copy()
     affine[:3, 3] = [0.0, 0.0, 0.0]
 
     current_signs = np.sign(np.diag(affine[:3, :3]))
     needs_flip = ~np.isclose(current_signs, target_signs)
+    flip_info = {
+        'needs_flip': [bool(x) for x in needs_flip],
+        'shape_at_flip': [int(x) for x in data.shape],
+        'target_signs': [int(x) for x in target_signs],
+    }
 
     if np.any(needs_flip):
         corrected_data = data.copy()
@@ -348,9 +367,9 @@ def reset_origin_and_orient(data, affine, target_signs=np.array([-1, -1, 1])):
         for axis in range(3):
             spacing_magnitude = abs(affine[axis, axis])
             corrected_affine[axis, axis] = target_signs[axis] * spacing_magnitude
-        return np.ascontiguousarray(corrected_data), corrected_affine
+        return np.ascontiguousarray(corrected_data), corrected_affine, flip_info
 
-    return data, affine
+    return data, affine, flip_info
 
 
 def build_head_crop(clipped_data, affine, voxel_size, device, patient_output_dir, patient_id):
@@ -383,7 +402,8 @@ def build_head_crop(clipped_data, affine, voxel_size, device, patient_output_dir
 #          + the actual high-resolution working volume
 # ============================================================================
 
-def build_reference_frames(cropped_data, cropped_affine, patient_output_dir, patient_id, highres_spacing):
+def build_reference_frames(cropped_data, cropped_affine, patient_output_dir, patient_id, highres_spacing,
+                            build_highres_data=True):
     """
     From the native-resolution head crop, build:
       - `local_data` / `local_affine`: the shared local coordinate frame
@@ -410,7 +430,7 @@ def build_reference_frames(cropped_data, cropped_affine, patient_output_dir, pat
     sitk.WriteImage(resampled_img, resampled_path)
 
     local_nib = nib.load(resampled_path)
-    local_data, local_affine = reset_origin_and_orient(local_nib.get_fdata(), local_nib.affine)
+    local_data, local_affine, flip_info = reset_origin_and_orient(local_nib.get_fdata(), local_nib.affine)
     local_path = os.path.join(tmp_dir, f"{patient_id}_local_frame_oriented.nii.gz")
     nib.save(nib.Nifti1Image(local_data, local_affine), local_path)
 
@@ -425,16 +445,21 @@ def build_reference_frames(cropped_data, cropped_affine, patient_output_dir, pat
         lowres_affine[i, i] *= padded_data.shape[i] / LOWRES_FINAL_SHAPE[i]
 
     # --- High-resolution working volume (this is what gets cropped/saved) ---
-    print(f"Resampling local frame directly to {highres_spacing} mm (no downsampling)...")
-    highres_img = resample_sitk_volume(local_path, highres_spacing)
-    highres_data = sitk.GetArrayFromImage(highres_img).transpose(2, 1, 0)
+    # The affine is cheap and always computed; the huge data array is only built
+    # for the legacy (non-fast) path -- the fast path resamples each ear FOV
+    # directly from the local frame instead of the whole head.
     highres_affine = local_affine.copy()
-    orig_spacing = np.array([np.abs(local_affine[i, i]) for i in range(3)])
     signs = np.sign(np.diag(local_affine[:3, :3]))
     for i in range(3):
         highres_affine[i, i] = signs[i] * highres_spacing[i]
 
-    return local_data, local_affine, lowres_data, lowres_affine, highres_data, highres_affine
+    highres_data = None
+    if build_highres_data:
+        print(f"Resampling local frame directly to {highres_spacing} mm (no downsampling)...")
+        highres_img = resample_sitk_volume(local_path, highres_spacing)
+        highres_data = sitk.GetArrayFromImage(highres_img).transpose(2, 1, 0)
+
+    return local_data, local_affine, lowres_data, lowres_affine, highres_data, highres_affine, flip_info
 
 
 # ============================================================================
@@ -800,16 +825,17 @@ def compute_alignment(landmark_locations_world, lowres_data, device, no_eyes, pa
                 flagged_labels.update(bad_lateral)
                 failure_reasons.append(f"Landmark(s) {bad_lateral} not further from centroid than muscles.")
 
-        try:
-            os.makedirs(viz_dir, exist_ok=True)
-            vis_path = os.path.join(viz_dir, f"{patient_id}_frankfort_plane_landmarks.png")
-            render_landmarks_visualization(
-                lowres_data, points_6pt, point_labels_6pt, vis_path,
-                removed_labels=removed_labels, flagged_labels=flagged_labels,
-                status_text=("SCAN FLAGGED: " + " | ".join(failure_reasons)) if failure_reasons else None,
-            )
-        except Exception as e:
-            print(f"  WARNING: Failed to render Frankfort visualization: {e}")
+        if VISUALIZE:
+            try:
+                os.makedirs(viz_dir, exist_ok=True)
+                vis_path = os.path.join(viz_dir, f"{patient_id}_frankfort_plane_landmarks.png")
+                render_landmarks_visualization(
+                    lowres_data, points_6pt, point_labels_6pt, vis_path,
+                    removed_labels=removed_labels, flagged_labels=flagged_labels,
+                    status_text=("SCAN FLAGGED: " + " | ".join(failure_reasons)) if failure_reasons else None,
+                )
+            except Exception as e:
+                print(f"  WARNING: Failed to render Frankfort visualization: {e}")
 
         if failure_reasons:
             raise _LandmarkOutlierError(f"{' '.join(failure_reasons)} Scan: '{patient_id}'.")
@@ -838,7 +864,8 @@ def compute_alignment(landmark_locations_world, lowres_data, device, no_eyes, pa
     if diagnostics['flagged_large_rotation']:
         print(f"  ⚠️  Large rotation detected ({abs(z_rot):.2f}°)!")
 
-    try:
+    if VISUALIZE:
+      try:
         os.makedirs(viz_dir, exist_ok=True)
         vis_path = os.path.join(viz_dir, f"{patient_id}_landmarks_visualization.png")
         landmark_names = ['L8', 'L9', 'L10', 'L11', 'L12', 'L13']
@@ -863,7 +890,7 @@ def compute_alignment(landmark_locations_world, lowres_data, device, no_eyes, pa
             plotter.add_text(title, position='upper_edge', font_size=14, color='black')
         plotter.screenshot(vis_path)
         plotter.close()
-    except Exception as e:
+      except Exception as e:
         print(f"  WARNING: Failed to render landmark visualization: {e}")
 
     return rotation, center, diagnostics
@@ -920,6 +947,44 @@ def crop_ear_fov(aligned_data, aligned_affine, landmark_world_mm, roi_size_voxel
     return roi, cropped_affine, roi_start, center_world
 
 
+def crop_ear_fov_fast(local_data, local_affine, highres_affine, highres_spacing,
+                       rotation, center, landmark_world_mm, roi_size_voxels=EAR_FOV_VOXELS,
+                       offset_mm=EAR_OFFSET_MM):
+    """Resample a single ear FOV directly from the 0.5 mm local frame.
+
+    Equivalent to (resample whole head to `highres_spacing` -> rotate about
+    `center` -> slice the FOV) but composed into one affine_transform over just
+    the 256^3 target grid, so it never materialises the full-head high-res
+    volume. Returns the same (data, affine, roi_start, center_world) as
+    crop_ear_fov so the output space is identical.
+    """
+    center_world = landmark_world_mm + offset_mm
+    center_voxel = np.round(world_to_voxel(center_world, highres_affine)).astype(int)
+    roi_size = np.array(roi_size_voxels)
+    roi_start = center_voxel - roi_size // 2
+
+    # Compose: ear-grid voxel t -> aligned voxel (roi_start+t) -> pre-rotation
+    # high-res voxel (inv_rot@v + offset) -> local world (highres_affine) ->
+    # local voxel (inv local_affine). This mirrors rotate_volume_physical().
+    T_roi = np.eye(4)
+    T_roi[:3, 3] = roi_start
+    inv_rot = np.linalg.inv(rotation.as_matrix())
+    c = np.asarray(center, dtype=float) / np.asarray(highres_spacing, dtype=float)
+    T_rot = np.eye(4)
+    T_rot[:3, :3] = inv_rot
+    T_rot[:3, 3] = c - inv_rot @ c
+    C = np.linalg.inv(local_affine) @ highres_affine @ T_rot @ T_roi
+    cropped = affine_transform(
+        local_data, C[:3, :3], offset=C[:3, 3],
+        output_shape=tuple(int(s) for s in roi_size), order=1, cval=-1000,
+    )
+
+    new_origin = voxel_to_world(roi_start.astype(float), highres_affine)
+    cropped_affine = highres_affine.copy()
+    cropped_affine[:3, 3] = new_origin
+    return cropped, cropped_affine, roi_start, center_world
+
+
 # ============================================================================
 # Stage 6 (from P4): final HU normalization
 # ============================================================================
@@ -933,9 +998,10 @@ def normalize_scan(image_data, min_hu=MIN_HU, max_hu=MAX_HU):
 # Orchestration: process a single raw CT scan end to end
 # ============================================================================
 
-def process_scan(scan_path, output_dir, landmark_model_path, model, device,
+def process_scan(scan_path, output_dir, model, device,
                   no_eyes=False, skip_alignment=False, highres_spacing=HIGHRES_SPACING,
-                  ear_fov_voxels=EAR_FOV_VOXELS, ear_offset_mm=EAR_OFFSET_MM):
+                  ear_fov_voxels=EAR_FOV_VOXELS, ear_offset_mm=EAR_OFFSET_MM,
+                  fast=True):
     patient_id = extract_patient_id_from_raw_filename(os.path.basename(scan_path))
     patient_output_dir = os.path.join(output_dir, patient_id)
     viz_dir = os.path.join(patient_output_dir, "visualizations")
@@ -974,15 +1040,35 @@ def process_scan(scan_path, output_dir, landmark_model_path, model, device,
         "step": 1, "operation": "head_localization_and_crop",
         "midpoint_mm": [float(x) for x in midpoint_mm], "centroids": centroid_info,
         "cropped_dimensions": [int(x) for x in cropped_data.shape],
+        # `cropped_affine` still shares the ORIGINAL scan's true world frame (Stage 1
+        # only windows the native-resolution grid, it never resamples/re-origins it).
+        # It's logged here (and reused below as `true_world_origin_mm`) because it's
+        # the last point in the pipeline where that link to the original scan is known
+        # before build_reference_frames() re-origins everything to (0,0,0).
+        "original_scan_affine": [[float(x) for x in row] for row in affine],
+        "cropped_affine": [[float(x) for x in row] for row in cropped_affine],
     })
 
     # --- Stage 2: shared local frame -> disposable low-res + real high-res volumes ---
-    local_data, local_affine, lowres_data, lowres_affine, highres_data, highres_affine = build_reference_frames(
-        cropped_data, cropped_affine, patient_output_dir, patient_id, highres_spacing)
+    local_data, local_affine, lowres_data, lowres_affine, highres_data, highres_affine, flip_info = build_reference_frames(
+        cropped_data, cropped_affine, patient_output_dir, patient_id, highres_spacing,
+        build_highres_data=not fast)
+    # Shape the full high-res aligned head WOULD have (needed by the eardrum map-back);
+    # computed without materialising it in fast mode.
+    highres_shape = tuple(int(round(local_data.shape[i] * abs(local_affine[i, i]) / highres_spacing[i]))
+                          for i in range(3))
     transform_log["steps"].append({
         "step": 2, "operation": "build_reference_frames",
         "lowres_shape": list(lowres_data.shape), "lowres_spacing_mm": LOWRES_SPACING,
-        "highres_shape": list(highres_data.shape), "highres_spacing_mm": list(highres_spacing),
+        "highres_shape": [int(x) for x in highres_shape], "highres_spacing_mm": list(highres_spacing),
+        "local_affine": [[float(x) for x in row] for row in local_affine],
+        "highres_affine": [[float(x) for x in row] for row in highres_affine],
+        "flip_info": flip_info,
+        # True world mm (original-scan frame) of voxel (0,0,0) of the local/highres
+        # frame, BEFORE build_reference_frames() re-origins it to (0,0,0) and BEFORE
+        # reset_origin_and_orient()'s flips. Needed to map results back onto the
+        # original scan (see map_segmentation_to_original.py).
+        "true_world_origin_mm": [float(x) for x in cropped_affine[:3, 3]],
     })
 
     # --- Stage 3: landmark detection on the disposable low-res volume ---
@@ -1001,7 +1087,7 @@ def process_scan(scan_path, output_dir, landmark_model_path, model, device,
         rotation = R.identity()
         center = np.zeros(3)
         aligned_landmarks = {lm_id: landmark_locations_world[lm_id] for lm_id in LANDMARK_IDS}
-        highres_aligned = highres_data
+        highres_aligned = highres_data  # None in fast mode
         transform_log["steps"].append({"step": 4, "operation": "frankfort_plane_alignment", "status": "SKIPPED"})
     else:
         print("Computing Frankfort-plane alignment...")
@@ -1012,11 +1098,14 @@ def process_scan(scan_path, output_dir, landmark_model_path, model, device,
         aligned_arr = rotation.apply(all_landmarks_arr - center) + center
         aligned_landmarks = {lm_id: aligned_arr[i] for i, lm_id in enumerate(LANDMARK_IDS)}
 
-        print("Rotating high-resolution volume to align Frankfort plane...")
-        highres_aligned = rotate_volume_physical(highres_data, highres_spacing, rotation, center)
-
-        aligned_path = os.path.join(patient_output_dir, f"{patient_id}_highres_aligned.nii.gz")
-        nib.save(nib.Nifti1Image(highres_aligned.astype(np.float32), highres_affine), aligned_path)
+        aligned_path = None
+        if fast:
+            highres_aligned = None  # ears are resampled directly from the local frame
+        else:
+            print("Rotating high-resolution volume to align Frankfort plane...")
+            highres_aligned = rotate_volume_physical(highres_data, highres_spacing, rotation, center)
+            aligned_path = os.path.join(patient_output_dir, f"{patient_id}_highres_aligned.nii.gz")
+            nib.save(nib.Nifti1Image(highres_aligned.astype(np.float32), highres_affine), aligned_path)
 
         transform_log["steps"].append({
             "step": 4, "operation": "frankfort_plane_alignment",
@@ -1041,14 +1130,48 @@ def process_scan(scan_path, output_dir, landmark_model_path, model, device,
         if is_left:
             applied_offset[0] = -applied_offset[0]
 
-        cropped, cropped_affine_ear, roi_start, center_world = crop_ear_fov(
-            highres_aligned, highres_affine, landmark_pos, ear_fov_voxels, applied_offset)
+        if fast:
+            cropped, cropped_affine_ear, roi_start, center_world = crop_ear_fov_fast(
+                local_data, local_affine, highres_affine, highres_spacing,
+                rotation, center, landmark_pos, ear_fov_voxels, applied_offset)
+            ear_source_shape = highres_shape
+        else:
+            cropped, cropped_affine_ear, roi_start, center_world = crop_ear_fov(
+                highres_aligned, highres_affine, landmark_pos, ear_fov_voxels, applied_offset)
+            ear_source_shape = highres_aligned.shape
 
+        # --- Place this high-res crop in the SAME output frame the P1->P4 pipeline
+        #     produces, using THIS run's own alignment (no transform logs). P3 crops a
+        #     90^3 ROI at the aligned ~1.05 mm grid and P4 resets that ROI's origin to
+        #     (0,0,0); we replicate exactly where that reset origin falls, then express
+        #     this finer/smaller 0.2 mm crop relative to it so the two overlap. ---
+        aligned_spacing = np.abs(np.diag(lowres_affine[:3, :3]))   # ~1.0547 mm (P3/P4 grid)
+        aligned_signs = np.sign(np.diag(lowres_affine[:3, :3]))    # [-1, -1, 1]
+        hr_spacing = np.asarray(highres_spacing, dtype=float)      # 0.2 mm
+        p4_offset = np.array(P4_OFFSET_MM, dtype=float)
         if is_left:
-            cropped = np.flip(cropped, axis=MIRROR_AXIS)
+            p4_offset[0] = -p4_offset[0]                           # P3 uses -x for the left ear, +x for the right
+        p4_center_voxel = np.round((landmark_pos + p4_offset) / aligned_spacing)
+        p4_roi_start = p4_center_voxel - (P4_ROI_SIZE_VOXELS // 2)
+        p4_box_corner_mm = p4_roi_start * aligned_spacing          # P4's reset origin, in aligned mm
 
-        cropped_affine_ear = cropped_affine_ear.copy()
-        cropped_affine_ear[:3, 3] = [0.0, 0.0, 0.0]  # origin reset for the saved crop
+        crop_corner_mm = np.asarray(roi_start, dtype=float) * hr_spacing
+        new_origin = aligned_signs * (crop_corner_mm - p4_box_corner_mm)
+        if is_left:
+            # Match P3's left-ear mirror: flip the data along axis 0 (affine kept
+            # unflipped, exactly like P3), and reflect the axis-0 origin inside the
+            # 90-voxel reference box so the flipped crop still overlaps P4's left ear.
+            cropped = np.flip(cropped, axis=MIRROR_AXIS)
+            ax = MIRROR_AXIS
+            new_origin[ax] = aligned_signs[ax] * (
+                aligned_spacing[ax] * (P4_ROI_SIZE_VOXELS - 1)
+                - (roi_start[ax] + cropped.shape[ax] - 1) * hr_spacing[ax]
+                + p4_box_corner_mm[ax]
+            )
+        cropped_affine_ear = np.eye(4)
+        for i in range(3):
+            cropped_affine_ear[i, i] = aligned_signs[i] * hr_spacing[i]
+        cropped_affine_ear[:3, 3] = new_origin
 
         raw_path = os.path.join(patient_output_dir, f"{patient_id}_{ear_name}_raw_hu.nii.gz")
         nib.save(nib.Nifti1Image(np.ascontiguousarray(cropped).astype(np.float32), cropped_affine_ear), raw_path)
@@ -1062,6 +1185,14 @@ def process_scan(scan_path, output_dir, landmark_model_path, model, device,
             "step": 5, "operation": f"crop_and_normalize_{ear_name}",
             "landmark_id": lm_id, "roi_center_world_mm": [float(x) for x in center_world],
             "roi_size_voxels": list(ear_fov_voxels), "mirrored": bool(is_left),
+            "mirror_axis": int(MIRROR_AXIS),
+            "anchored_to_p4_output": True,
+            # Offset of this crop within `highres_aligned` (the volume this was cut
+            # from) and that volume's shape -- needed to map a segmentation predicted
+            # on the saved crop back onto the original scan.
+            "roi_start_in_highres_aligned": [int(x) for x in roi_start],
+            "highres_aligned_shape": [int(x) for x in ear_source_shape],
+            "final_affine_matrix": [[float(x) for x in row] for row in cropped_affine_ear],
             "raw_hu_output_file": raw_path, "normalized_output_file": final_path,
         })
         print(f"  ✓ Saved {ear_name}: {final_path}")
@@ -1097,12 +1228,18 @@ def parse_arguments():
                         help='Final isotropic voxel spacing in mm (default: 0.2)')
     parser.add_argument('--ear_fov_voxels', type=int, default=256,
                         help='Final ear crop size in voxels per axis (default: 256)')
-    parser.add_argument('--ear_offset_mm', type=float, nargs=3, default=[-10.0, 0.0, 0.0],
+    parser.add_argument('--ear_offset_mm', type=float, nargs=3, default=[20.0, 0.0, 0.0],
                         help='Offset in mm [x y z] from the eardrum landmark for the crop center '
                              '(default shifts +X to include more of the cochlea; mirrored for left ear)')
     parser.add_argument('--overwrite', type=str, default='False', choices=['True', 'False'],
                         help='Reprocess patients even if their final ear crops already exist (default: False, '
                              'i.e. already-processed patients are skipped)')
+    parser.add_argument('--visualize', type=str, default='False', choices=['True', 'False'],
+                        help='Save landmark/Frankfort-plane QA screenshots (slow rendering; default: False)')
+    parser.add_argument('--fast', type=str, default='False', choices=['True', 'False'],
+                        help='Resample each ear FOV directly from the 0.5 mm local frame (trilinear, low memory) '
+                             'instead of building and rotating the full-head high-res volume with B-spline '
+                             'upsampling. fast=False gives sharper output (default: False).')
     return parser.parse_args()
 
 
@@ -1110,6 +1247,10 @@ def main():
     args = parse_arguments()
     if not args.input_ct and not args.raw_scans_dir:
         raise ValueError("Provide either --input_ct or --raw_scans_dir.")
+
+    global VISUALIZE
+    VISUALIZE = (args.visualize == 'True')
+    fast = (args.fast == 'True')
 
     os.makedirs(args.output_dir, exist_ok=True)
     device = get_device()
@@ -1153,10 +1294,11 @@ def main():
     for scan_path in scan_paths:
         try:
             process_scan(
-                scan_path, args.output_dir, args.landmark_model, model, device,
+                scan_path, args.output_dir, model, device,
                 no_eyes=no_eyes, skip_alignment=skip_alignment,
                 highres_spacing=highres_spacing, ear_fov_voxels=ear_fov_voxels,
                 ear_offset_mm=ear_offset_mm,
+                fast=fast,
             )
         except Exception as e:
             print(f"FAILED: {scan_path}: {e}")
